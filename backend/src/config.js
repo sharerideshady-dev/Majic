@@ -89,5 +89,18 @@ module.exports = {
       archiveFolder: process.env.IMAP_ARCHIVE_FOLDER || "",
       maxMessagesPerPoll: toInteger(process.env.IMAP_MAX_MESSAGES_PER_POLL, 10),
     },
+    mailServerApi: {
+      baseUrl:
+        process.env.MAIL_SERVER_API_BASE_URL ||
+        process.env.MAIL_API_BASE_URL ||
+        process.env.BASE_URL ||
+        "",
+      token:
+        process.env.MAIL_SERVER_API_TOKEN ||
+        process.env.MAIL_API_TOKEN ||
+        process.env.API_TOKEN ||
+        "",
+      authHeader: process.env.MAIL_SERVER_API_AUTH_HEADER || "Authorization",
+    },
   },
 };
