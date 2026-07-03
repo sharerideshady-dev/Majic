@@ -8,7 +8,11 @@ const { saveRegisteredAccountFromAttempt } = require("./registeredAccounts");
 
 const activeJobs = new Set();
 const liveScreenshots = new Map();
-
+const BLOCKED_PROXY_DOMAINS = [
+  // "facebook.com",
+  // "fbcdn.net",
+  // "meta.com",
+];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const DEFAULT_FIELD_ORDER = [
   "firstName",
@@ -188,9 +192,10 @@ function outcomeError(failureType, message) {
 }
 
 function isBlockedProxyHost(hostname) {
-  return /(^|\.)facebook\.com$/i.test(hostname) || /(^|\.)fbcdn\.net$/i.test(hostname) || /(^|\.)meta\.com$/i.test(hostname);
+  return BLOCKED_PROXY_DOMAINS.some((domain) =>
+    new RegExp(`(^|\\.)${escapeRegExp(domain)}$`, "i").test(hostname)
+  );
 }
-
 function isBlockedProxyTarget(url) {
   try {
     return isBlockedProxyHost(new URL(url).hostname);
