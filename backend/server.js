@@ -9,6 +9,7 @@ const otpSessionsRouter = require("./src/routes/otpSessions");
 const templatesRouter = require("./src/routes/templates");
 const apiAutomationRouter = require("./src/routes/apiAutomation");
 const registeredAccountsRouter = require("./src/routes/registeredAccounts");
+const mailuUsersRouter = require("./src/routes/mailuUsers");
 const { startImapPoller } = require("./src/services/imapPoller");
 
 const app = express();
@@ -21,7 +22,7 @@ app.use(
     limit: "10mb",
   })
 );
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "8mb" }));
 app.use(express.urlencoded({ extended: false, limit: "10mb" }));
 
 app.get("/", (req, res) => {
@@ -36,6 +37,7 @@ app.use("/api/templates", templatesRouter);
 app.use("/api/jobs", jobsRouter);
 app.use("/api/api-automation", apiAutomationRouter);
 app.use("/api/registered-accounts", registeredAccountsRouter);
+app.use("/api/mailu-users", mailuUsersRouter);
 app.use("/api/otp-sessions", otpSessionsRouter);
 app.use("/api/mail/inbound", mailInboundRouter);
 

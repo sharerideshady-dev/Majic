@@ -40,45 +40,47 @@ function httpError(statusCode, message, details) {
   return error;
 }
 
-function isPrivateIpv4(hostname) {
-  const parts = hostname.split(".").map((part) => Number.parseInt(part, 10));
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part))) {
+function isPrivateIpAddress(hostname) {
+  const normalized = hostname.replace(/^\[|\]$/g, "");
+  if (
+    normalized === "localhost" ||
+    normalized === "::1" ||
+    normalized.startsWith("127.")
+  ) {
+    return true;
+  }
+
+  const octets = normalized.split(".").map((part) => Number(part));
+  if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part))) {
     return false;
   }
 
-  const [first, second] = parts;
+  const [first, second] = octets;
   return (
     first === 10 ||
-    first === 127 ||
-    first === 0 ||
-    (first === 169 && second === 254) ||
     (first === 172 && second >= 16 && second <= 31) ||
-    (first === 192 && second === 168)
+    (first === 192 && second === 168) ||
+    (first === 169 && second === 254)
   );
 }
 
 function assertPublicHttpUrl(value) {
-  const parsed = new URL(value);
-  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  const isIpv6 = hostname.includes(":");
-
-  if (!["http:", "https:"].includes(parsed.protocol)) {
-    throw httpError(400, "Only HTTP and HTTPS URLs can be fetched with Zyte");
+  let url;
+  try {
+    url = new URL(String(value || "").trim());
+  } catch (error) {
+    throw httpError(400, "url must be a valid HTTP or HTTPS URL");
   }
 
-  if (
-    hostname === "localhost" ||
-    hostname === "::1" ||
-    (isIpv6 &&
-      (hostname.startsWith("fe80:") ||
-        hostname.startsWith("fc") ||
-        hostname.startsWith("fd"))) ||
-    isPrivateIpv4(hostname)
-  ) {
-    throw httpError(400, "Zyte extraction requires a public URL");
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw httpError(400, "url must use HTTP or HTTPS");
   }
 
-  return parsed.toString();
+  if (isPrivateIpAddress(url.hostname.toLowerCase())) {
+    throw httpError(400, "url must target a public host");
+  }
+
+  return url.toString();
 }
 
 function zyteAuthHeader() {
@@ -137,8 +139,7 @@ async function extractHttpResponse(payload) {
           data.title ||
           data.error ||
           data.message ||
-          `Zyte extraction failed with ${response.status}`,
-        data
+          `Zyte extraction failed with ${response.status}`
       );
     }
 

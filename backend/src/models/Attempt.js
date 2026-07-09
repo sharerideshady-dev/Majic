@@ -30,6 +30,12 @@ const attemptSchema = new mongoose.Schema(
       fieldEvidence: mongoose.Schema.Types.Mixed,
       beforeSubmitSnapshot: mongoose.Schema.Types.Mixed,
       afterFailureSnapshot: mongoose.Schema.Types.Mixed,
+      lastScreenshot: {
+        contentType: String,
+        data: String,
+        updatedAt: Date,
+        error: String,
+      },
       proxySession: {
         provider: String,
         sessionId: String,

@@ -46,6 +46,7 @@ const years = Array.from({ length: 90 }, (_, index) => String(new Date().getFull
 const fieldOrder = [
   "firstName",
   "surname",
+  "username",
   "birthDay",
   "birthMonth",
   "birthYear",
@@ -93,6 +94,9 @@ const successMessageOptions = [
 ];
 
 const NAME_LIBRARY_STORAGE_KEY = "majic:name-library";
+const MAILU_FORM_STORAGE_KEY = "majic:mailu-form";
+const MAILU_DEFAULT_DOMAIN = "aitechia.com";
+const MAILU_DEFAULT_COUNT = 1000;
 
 const defaultFirstNameOptions = [
   "Ahmad",
@@ -114,6 +118,66 @@ const defaultFirstNameOptions = [
   "Dina",
   "Rana",
 ];
+
+const maleFirstNameKeys = new Set([
+  "ahmad",
+  "ahmed",
+  "mohammad",
+  "mohammed",
+  "muhammad",
+  "mahmoud",
+  "mahmood",
+  "khaled",
+  "khalid",
+  "yousef",
+  "yusuf",
+  "ibrahim",
+  "tamer",
+  "anas",
+  "alaa",
+  "hassan",
+  "hasan",
+  "omar",
+  "ommar",
+  "ali",
+  "abdullah",
+  "abdallah",
+  "hussein",
+  "rami",
+  "samer",
+  "fadi",
+  "majd",
+  "zaid",
+]);
+
+const femaleFirstNameKeys = new Set([
+  "mariam",
+  "maryam",
+  "aisha",
+  "aysha",
+  "lina",
+  "hala",
+  "reem",
+  "nour",
+  "noor",
+  "dina",
+  "rana",
+  "fatima",
+  "fatma",
+  "sara",
+  "sarah",
+  "yara",
+  "layla",
+  "leila",
+  "lama",
+  "huda",
+  "hoda",
+  "rima",
+  "rasha",
+  "aya",
+  "amal",
+  "salma",
+]);
 
 const defaultSurnameOptions = [
   "Abu Amsha",
@@ -233,6 +297,50 @@ function uniqueEmailAddresses(values) {
   };
 }
 
+function parseUploadedEmailAccounts(text) {
+  return String(text || "")
+    .split(/\r?\n/)
+    .map((line, index) => {
+      const cleanLine = line.trim();
+      if (!cleanLine) return null;
+      const separatorIndex = cleanLine.search(/[,\t]/);
+      if (separatorIndex === -1) {
+        throw new Error(`Line ${index + 1} must be email,password`);
+      }
+      const emailText =
+        separatorIndex === -1 ? cleanLine : cleanLine.slice(0, separatorIndex);
+      const password =
+        separatorIndex === -1 ? "" : cleanLine.slice(separatorIndex + 1).trim();
+      const email = cleanEmailAddress(emailText);
+      if (!email || !password) {
+        throw new Error(`Line ${index + 1} must include a valid email and password`);
+      }
+      return { email, password };
+    })
+    .filter(Boolean);
+}
+
+function uniqueUploadedEmailAccounts(accounts) {
+  const seen = new Set();
+  const valid = [];
+  const passwordByEmail = {};
+  const rawCount = accounts.length;
+
+  for (const account of accounts) {
+    if (!account.email || !account.password || seen.has(account.email)) continue;
+    seen.add(account.email);
+    valid.push(account.email);
+    passwordByEmail[account.email] = account.password;
+  }
+
+  return {
+    rawCount,
+    valid,
+    passwordByEmail,
+    duplicatesRemoved: Math.max(0, rawCount - valid.length),
+  };
+}
+
 function extractEmailsFromText(text) {
   return String(text || "")
     .split(/[\n,;]+/)
@@ -318,6 +426,39 @@ function loadNameLibrary() {
 function saveNameLibrary(library) {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(NAME_LIBRARY_STORAGE_KEY, JSON.stringify(library));
+}
+
+function defaultMailuForm() {
+  return {
+    count: MAILU_DEFAULT_COUNT,
+    domain: MAILU_DEFAULT_DOMAIN,
+    baseUrl: "",
+    apiPath: "/api",
+    apiToken: "",
+    dryRun: true,
+  };
+}
+
+function loadMailuForm() {
+  const defaults = defaultMailuForm();
+  if (typeof window === "undefined") return defaults;
+
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(MAILU_FORM_STORAGE_KEY) || "{}");
+    return {
+      ...defaults,
+      ...saved,
+      count: Number(saved.count) || defaults.count,
+      dryRun: saved.dryRun !== undefined ? Boolean(saved.dryRun) : defaults.dryRun,
+    };
+  } catch (error) {
+    return defaults;
+  }
+}
+
+function saveMailuForm(form) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(MAILU_FORM_STORAGE_KEY, JSON.stringify(form));
 }
 
 function normalizeAccountHeader(value) {
@@ -483,25 +624,251 @@ function randomPassword() {
   return password;
 }
 
-function generatedRecord(email, registrationCase, proxyCase, nameLibrary) {
+function generatedRecord(email, registrationCase, proxyCase, nameLibrary, password) {
+  const emailParts = emailNameParts(email);
   const firstNames = nameLibrary.firstNames.length
     ? nameLibrary.firstNames
     : defaultFirstNameOptions;
   const surnames = nameLibrary.surnames.length ? nameLibrary.surnames : defaultSurnameOptions;
   const proxySessionId = `${proxyCase}-${email}`.replace(/[^a-zA-Z0-9_.:-]/g, "-");
+  const firstName = emailParts.firstName || randomItem(firstNames);
+  const surname = emailParts.surname || randomItem(surnames);
+  const username = email.split("@")[0] || "";
 
   return {
-    firstName: randomItem(firstNames),
-    surname: randomItem(surnames),
+    firstName,
+    surname,
     ...randomBirthDate(),
-    gender: Math.random() > 0.5 ? "male" : "female",
+    gender: genderForFirstName(firstName),
+    username,
     email,
     contact: email,
-    password: randomPassword(),
+    password,
     registrationCase,
     proxyCase,
     proxySessionId,
   };
+}
+
+function slugName(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function nameGender(firstName) {
+  const key = slugName(firstName);
+  if (maleFirstNameKeys.has(key)) return "male";
+  if (femaleFirstNameKeys.has(key)) return "female";
+  return "unknown";
+}
+
+function genderForFirstName(firstName, format = "lower") {
+  const gender = nameGender(firstName);
+  const normalizedGender =
+    gender === "unknown" ? (slugName(firstName).charCodeAt(0) % 2 === 0 ? "female" : "male") : gender;
+
+  return format === "title"
+    ? normalizedGender.charAt(0).toUpperCase() + normalizedGender.slice(1)
+    : normalizedGender;
+}
+
+function generateMailuRows(count, domain, nameLibrary) {
+  const safeCount = Math.min(Math.max(Number(count) || MAILU_DEFAULT_COUNT, 1), 10000);
+  const firstNames = nameLibrary.firstNames.length
+    ? nameLibrary.firstNames
+    : defaultFirstNameOptions;
+  const surnames = nameLibrary.surnames.length ? nameLibrary.surnames : defaultSurnameOptions;
+  const emailOptions = [];
+  const seenEmails = new Set();
+
+  firstNames.forEach((firstName) => {
+    surnames.forEach((surname) => {
+      const email = `${slugName(firstName)}.${slugName(surname)}@${domain}`;
+      if (seenEmails.has(email)) return;
+      seenEmails.add(email);
+      emailOptions.push({ firstName, surname, email });
+    });
+  });
+
+  const rows = [];
+  const targetCount = Math.min(safeCount, emailOptions.length);
+
+  while (rows.length < targetCount) {
+    const optionIndex = randomInt(0, emailOptions.length - 1);
+    const [{ firstName, surname, email }] = emailOptions.splice(optionIndex, 1);
+    const birthDate = randomBirthDate();
+
+    rows.push({
+      name: `${firstName} ${surname}`,
+      firstName,
+      surname,
+      day: Number(birthDate.birthDay),
+      month: Number(birthDate.birthMonth),
+      year: Number(birthDate.birthYear),
+      gender: genderForFirstName(firstName, "title"),
+      email,
+      password: randomPassword(),
+    });
+  }
+
+  return rows;
+}
+
+function emailNameParts(email) {
+  const localPart = String(email || "").split("@")[0] || "";
+  const parts = localPart
+    .split(".")
+    .map((part) => part.replace(/\d+$/g, "").trim())
+    .filter(Boolean);
+
+  return {
+    firstName: parts[0] || "",
+    surname: parts[1] || "",
+  };
+}
+
+function normalizeNamePart(value) {
+  return slugName(value).replace(/\d+$/g, "");
+}
+
+function mailuCreatedToGeneratorRecord(createdUser) {
+  const rawLinkedUser = createdUser.generatedUserId || {};
+  const fallback = emailNameParts(createdUser.email);
+  const email = cleanEmailAddress(createdUser.email);
+  const username = email.split("@")[0] || "";
+  const linkedEmail = cleanEmailAddress(rawLinkedUser.email);
+  const linkedUser = linkedEmail && linkedEmail === email ? rawLinkedUser : {};
+  const firstName = fallback.firstName;
+  const surname = fallback.surname;
+  const emailParts = emailNameParts(email);
+  const hasLinkedIdentity = Boolean(linkedUser.email);
+  const createdPassword = String(createdUser.password || "");
+  const password = createdPassword;
+  const hasRequiredIdentity =
+    Boolean(firstName) &&
+    Boolean(surname) &&
+    Boolean(linkedUser.day || linkedUser.birthDay) &&
+    Boolean(linkedUser.month || linkedUser.birthMonth) &&
+    Boolean(linkedUser.year || linkedUser.birthYear) &&
+    Boolean(linkedUser.gender);
+  const nameMatchesEmail =
+    !emailParts.firstName ||
+    (normalizeNamePart(firstName) === normalizeNamePart(emailParts.firstName) &&
+      normalizeNamePart(surname) === normalizeNamePart(emailParts.surname));
+
+  return {
+    firstName,
+    surname,
+    birthDay: String(linkedUser.day || linkedUser.birthDay || ""),
+    birthMonth: String(linkedUser.month || linkedUser.birthMonth || ""),
+    birthYear: String(linkedUser.year || linkedUser.birthYear || ""),
+    gender: String(linkedUser.gender || "").toLowerCase(),
+    username,
+    email,
+    contact: email,
+    password,
+    mailuPassword: createdPassword,
+    mailuBatchId: createdUser.batchId,
+    mailuCreatedUserId: createdUser._id,
+    validation: {
+      validEmail: Boolean(email),
+      linkedEmailMatches: !linkedEmail || linkedEmail === email,
+      hasLinkedIdentity,
+      hasRequiredIdentity,
+      nameMatchesEmail,
+      passwordMatchesMailu: !createdPassword || password === createdPassword,
+      status: createdUser.status,
+    },
+  };
+}
+
+function validateMailuCreatedRecords(createdUsers) {
+  const seenEmails = new Set();
+  let duplicateEmails = 0;
+  const records = createdUsers
+    .filter((user) => user.status === "created")
+    .filter((user) => {
+      const email = cleanEmailAddress(user.email);
+      if (!email) return true;
+      if (seenEmails.has(email)) {
+        duplicateEmails += 1;
+        return false;
+      }
+      seenEmails.add(email);
+      return true;
+    })
+    .map(mailuCreatedToGeneratorRecord);
+  const summary = records.reduce(
+    (totals, record) => ({
+      total: totals.total + 1,
+      matched: totals.matched + (record.validation.hasLinkedIdentity ? 1 : 0),
+      missingIdentity: totals.missingIdentity + (record.validation.hasRequiredIdentity ? 0 : 1),
+      mismatchedNames: totals.mismatchedNames + (record.validation.nameMatchesEmail ? 0 : 1),
+      invalidEmails: totals.invalidEmails + (record.validation.validEmail ? 0 : 1),
+    }),
+    {
+      total: 0,
+      matched: 0,
+      missingIdentity: 0,
+      mismatchedNames: 0,
+      invalidEmails: 0,
+      duplicateEmails,
+    }
+  );
+  summary.duplicateEmails = duplicateEmails;
+  const validRecords = records.filter(
+    (record) =>
+      record.validation.validEmail &&
+      record.validation.hasRequiredIdentity &&
+      record.validation.nameMatchesEmail &&
+      record.password
+  );
+
+  return { records, validRecords, summary };
+}
+
+function validateMailuGeneratorPasswords(records) {
+  const invalidRecord = records.find(
+    (record) =>
+      !record.email ||
+      !record.password ||
+      !record.mailuPassword ||
+      record.password !== record.mailuPassword
+  );
+
+  if (invalidRecord) {
+    throw new Error(
+      `Mailu password mismatch for ${invalidRecord.email || "selected record"}`
+    );
+  }
+}
+
+function pickRandomItems(items, count) {
+  const shuffled = [...items];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = randomInt(0, index);
+    [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+  }
+  return shuffled.slice(0, count);
+}
+
+function stableIndex(value, length) {
+  if (length <= 1) return 0;
+  let hash = 0;
+  const text = String(value || "");
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash * 31 + text.charCodeAt(index)) >>> 0;
+  }
+  return hash % length;
+}
+
+function caseForRecord(cases, index, mode, seed = "") {
+  const availableCases = cases.length > 0 ? cases : ["MAJIC ONE"];
+  if (mode === "random") {
+    return availableCases[stableIndex(seed, availableCases.length)];
+  }
+  return availableCases[index % availableCases.length];
 }
 
 function settingsPayload(settings) {
@@ -510,11 +877,11 @@ function settingsPayload(settings) {
     maxDelayMs: Number(settings.maxDelayMs),
     registrationCase: settings.registrationCase,
     concurrency: Number(settings.concurrency),
-    headless: Boolean(settings.headless),
-    showBrowser: !Boolean(settings.headless),
+    headless: true,
+    showBrowser: false,
     livePreview: Boolean(settings.livePreview),
-    slowMoMs: Number(settings.slowMoMs),
-    keepBrowserOpenOnError: Boolean(settings.keepBrowserOpenOnError),
+    slowMoMs: 0,
+    keepBrowserOpenOnError: false,
     fieldOrder,
   };
 }
@@ -610,15 +977,20 @@ function App() {
     maxDelayMs: 180000,
     concurrency: 1,
     registrationCase: "MAJIC ONE",
-    headless: false,
+    headless: true,
     livePreview: true,
-    slowMoMs: 500,
-    keepBrowserOpenOnError: true,
+    slowMoMs: 0,
+    keepBrowserOpenOnError: false,
   });
   const [generatorForm, setGeneratorForm] = useState({
     templateId: "",
+    emailSource: "upload",
     countMode: "all",
     manualCount: 10,
+    mailuUseMode: "selected",
+    mailuCount: 50,
+    caseMode: "rotate",
+    proxyCaseMode: "rotate",
     fileName: "",
     registrationCases: ["MAJIC ONE"],
     proxyCases: ["PROXY ONE"],
@@ -628,6 +1000,26 @@ function App() {
     firstNames: "",
     surnames: "",
   });
+  const [mailuForm, setMailuForm] = useState(loadMailuForm);
+  const [mailuRows, setMailuRows] = useState(() =>
+    generateMailuRows(
+      loadMailuForm().count,
+      loadMailuForm().domain || MAILU_DEFAULT_DOMAIN,
+      loadNameLibrary()
+    )
+  );
+  const [mailuBatchId, setMailuBatchId] = useState("");
+  const [mailuStatus, setMailuStatus] = useState({
+    state: "idle",
+    message: "No Mailu action has run yet.",
+    summary: null,
+    results: [],
+  });
+  const [mailuBatches, setMailuBatches] = useState([]);
+  const [mailuCreatedUsers, setMailuCreatedUsers] = useState([]);
+  const [mailuCreatedTotal, setMailuCreatedTotal] = useState(0);
+  const [selectedMailuCreatedIds, setSelectedMailuCreatedIds] = useState([]);
+  const [mailuSearch, setMailuSearch] = useState("");
   const [apiAutomationForm, setApiAutomationForm] = useState({
     loginUrl: "",
     targetUrl: "",
@@ -673,6 +1065,7 @@ function App() {
   const [uploadedEmails, setUploadedEmails] = useState({
     rawCount: 0,
     valid: [],
+    passwordByEmail: {},
     duplicatesRemoved: 0,
   });
   const [uploadedEmailValues, setUploadedEmailValues] = useState([]);
@@ -731,10 +1124,87 @@ function App() {
           email,
           selectedGeneratorCases[index % selectedGeneratorCases.length],
           selectedGeneratorProxyCases[index % selectedGeneratorProxyCases.length],
-          nameLibrary
+          nameLibrary,
+          uploadedEmails.passwordByEmail[email]
         )
       ),
-    [generatorEmails, nameLibrary, selectedGeneratorCases, selectedGeneratorProxyCases]
+    [
+      generatorEmails,
+      nameLibrary,
+      selectedGeneratorCases,
+      selectedGeneratorProxyCases,
+      uploadedEmails.passwordByEmail,
+    ]
+  );
+  const mailuGeneratorValidation = useMemo(
+    () => validateMailuCreatedRecords(mailuCreatedUsers),
+    [mailuCreatedUsers]
+  );
+  const selectedMailuRecordCount = useMemo(
+    () =>
+      mailuGeneratorValidation.validRecords.filter((record) =>
+        selectedMailuCreatedIds.includes(record.mailuCreatedUserId)
+      ).length,
+    [mailuGeneratorValidation.validRecords, selectedMailuCreatedIds]
+  );
+  const selectedMailuRecordsForGenerator = useMemo(() => {
+    const validRecords = mailuGeneratorValidation.validRecords;
+    const count = Math.min(
+      Math.max(Number(generatorForm.mailuCount) || validRecords.length, 1),
+      validRecords.length
+    );
+
+    if (generatorForm.mailuUseMode === "selected") {
+      return validRecords.filter((record) =>
+        selectedMailuCreatedIds.includes(record.mailuCreatedUserId)
+      );
+    }
+
+    if (generatorForm.mailuUseMode === "random") {
+      return pickRandomItems(validRecords, count);
+    }
+
+    return validRecords.slice(0, count);
+  }, [
+    generatorForm.mailuCount,
+    generatorForm.mailuUseMode,
+    mailuGeneratorValidation.validRecords,
+    selectedMailuCreatedIds,
+  ]);
+  const dataGeneratorRecords = useMemo(
+    () => {
+      if (generatorForm.emailSource !== "mailu") return generatedRecords;
+
+      return selectedMailuRecordsForGenerator.map((record, index) => ({
+        ...record,
+        registrationCase: caseForRecord(
+          selectedGeneratorCases,
+          index,
+          generatorForm.caseMode,
+          `${record.email}:majic`
+        ),
+        proxyCase: caseForRecord(
+          selectedGeneratorProxyCases,
+          index,
+          generatorForm.proxyCaseMode,
+          `${record.email}:proxy`
+        ),
+      }));
+    },
+    [
+      generatedRecords,
+      generatorForm.caseMode,
+      generatorForm.emailSource,
+      generatorForm.proxyCaseMode,
+      selectedMailuRecordsForGenerator,
+      selectedGeneratorCases,
+      selectedGeneratorProxyCases,
+    ]
+  );
+  const mailuPreviewRows = useMemo(() => mailuRows.slice(0, 12), [mailuRows]);
+  const mailuResultRows = useMemo(
+    () => mailuStatus.results.slice(0, 200),
+    [mailuStatus.results]
   );
   const apiAccountsForQueue = useMemo(() => {
     const baseAccounts =
@@ -820,6 +1290,248 @@ function App() {
     setGeneratorForm((current) => ({ ...current, [field]: value }));
   }
 
+  function updateMailuForm(field, value) {
+    setMailuForm((current) => {
+      const nextForm = { ...current, [field]: value };
+      saveMailuForm(nextForm);
+      return nextForm;
+    });
+  }
+
+  function generateMailuBatch() {
+    const domain = String(mailuForm.domain || MAILU_DEFAULT_DOMAIN)
+      .trim()
+      .toLowerCase()
+      .replace(/^@/, "");
+    const rows = generateMailuRows(mailuForm.count, domain, nameLibrary);
+    setMailuRows(rows);
+    setMailuBatchId("");
+    setMailuStatus({
+      state: "idle",
+      message: `Generated ${rows.length} ${domain} users locally. Save to MongoDB when ready.`,
+      summary: null,
+      results: [],
+    });
+  }
+
+  async function saveMailuBatch() {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const data = await apiRequest("/api/mailu-users/generated-batches", {
+        method: "POST",
+        body: JSON.stringify({
+          batchId: mailuBatchId || undefined,
+          domain: mailuForm.domain,
+          users: mailuRows,
+        }),
+      });
+      setMailuBatchId(data.batchId);
+      setNotice(data.message);
+      await loadMailuStorage();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function testMailuConnection() {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    setMailuStatus({
+      state: "loading",
+      message: "Testing Mailu API connection...",
+      summary: null,
+      results: [],
+    });
+    try {
+      const data = await apiRequest("/api/mailu-users/test", {
+        method: "POST",
+        body: JSON.stringify(mailuForm),
+      });
+      setMailuStatus({
+        state: "success",
+        message: data.message,
+        summary: data.summary,
+        results: [],
+      });
+    } catch (err) {
+      setMailuStatus({
+        state: "error",
+        message: err.message,
+        summary: null,
+        results: [],
+      });
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createMailuUsers() {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    setMailuStatus({
+      state: "loading",
+      message: mailuForm.dryRun
+        ? "Checking generated users without creating Mailu accounts..."
+        : "Creating Mailu users and storing results in MongoDB...",
+      summary: null,
+      results: [],
+    });
+    try {
+      const data = await apiRequest("/api/mailu-users/create", {
+        method: "POST",
+        body: JSON.stringify({
+          ...mailuForm,
+          batchId: mailuBatchId || undefined,
+          users: mailuRows,
+        }),
+      });
+      setMailuBatchId(data.batchId);
+      setMailuStatus({
+        state: "success",
+        message: data.message,
+        summary: data.summary,
+        results: data.results || [],
+      });
+      setNotice(data.message);
+      await loadMailuStorage();
+    } catch (err) {
+      setMailuStatus({
+        state: "error",
+        message: err.message,
+        summary: null,
+        results: [],
+      });
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function findMailuDuplicates() {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    setMailuStatus({
+      state: "loading",
+      message: "Checking Mailu for duplicate addresses...",
+      summary: null,
+      results: [],
+    });
+    try {
+      const data = await apiRequest("/api/mailu-users/cleanup-duplicates", {
+        method: "POST",
+        body: JSON.stringify({
+          ...mailuForm,
+          dryRun: true,
+        }),
+      });
+      setMailuStatus({
+        state: "success",
+        message: data.message,
+        summary: data.summary,
+        results: data.results || [],
+      });
+      setNotice(data.message);
+    } catch (err) {
+      setMailuStatus({
+        state: "error",
+        message: err.message,
+        summary: null,
+        results: [],
+      });
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cleanupMailuDuplicates() {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    setMailuStatus({
+      state: "loading",
+      message: mailuForm.dryRun
+        ? "Dry run: checking duplicate Mailu users without deleting..."
+        : "Deleting duplicate Mailu users...",
+      summary: null,
+      results: [],
+    });
+    try {
+      const data = await apiRequest("/api/mailu-users/cleanup-duplicates", {
+        method: "POST",
+        body: JSON.stringify(mailuForm),
+      });
+      setMailuStatus({
+        state: "success",
+        message: data.message,
+        summary: data.summary,
+        results: data.results || [],
+      });
+      setNotice(data.message);
+      await loadMailuStorage();
+    } catch (err) {
+      setMailuStatus({
+        state: "error",
+        message: err.message,
+        summary: null,
+        results: [],
+      });
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cleanupExistingGeneratedMailuUsers() {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    setMailuStatus({
+      state: "loading",
+      message: mailuForm.dryRun
+        ? "Dry run: checking existing generated Mailu mailboxes..."
+        : "Deleting existing generated Mailu mailboxes...",
+      summary: null,
+      results: [],
+    });
+    try {
+      const data = await apiRequest("/api/mailu-users/cleanup-generated-existing", {
+        method: "POST",
+        body: JSON.stringify({
+          ...mailuForm,
+          batchId: mailuBatchId || undefined,
+          users: mailuRows,
+        }),
+      });
+      setMailuStatus({
+        state: "success",
+        message: data.message,
+        summary: data.summary,
+        results: data.results || [],
+      });
+      setNotice(data.message);
+      await loadMailuStorage();
+    } catch (err) {
+      setMailuStatus({
+        state: "error",
+        message: err.message,
+        summary: null,
+        results: [],
+      });
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function updateNameLibraryDraft(field, value) {
     setNameLibraryDraft((current) => ({ ...current, [field]: value }));
   }
@@ -862,6 +1574,15 @@ function App() {
 
   function updateRegisteredAccountFilter(field, value) {
     setRegisteredAccountFilters((current) => ({ ...current, [field]: value }));
+  }
+
+  function showFacebookRegisteredAccounts() {
+    const nextFilters = {
+      ...registeredAccountFilters,
+      status: "registered",
+      facebookOnly: true,
+    };
+    loadRegisteredAccounts(nextFilters);
   }
 
   function updateApiAutomationAction(action, value) {
@@ -914,6 +1635,26 @@ function App() {
     setSelectedRegisteredAccountIds(registeredAccounts.map((account) => account._id));
   }
 
+  function toggleMailuCreatedSelection(recordId) {
+    setSelectedMailuCreatedIds((current) =>
+      current.includes(recordId)
+        ? current.filter((id) => id !== recordId)
+        : [...current, recordId]
+    );
+  }
+
+  function selectAllValidMailuCreated() {
+    setSelectedMailuCreatedIds(
+      mailuGeneratorValidation.validRecords
+        .map((record) => record.mailuCreatedUserId)
+        .filter(Boolean)
+    );
+  }
+
+  function clearSelectedMailuCreated() {
+    setSelectedMailuCreatedIds([]);
+  }
+
   function toggleGeneratorRegistrationCase(registrationCase) {
     setGeneratorForm((current) => {
       const exists = current.registrationCases.includes(registrationCase);
@@ -949,26 +1690,19 @@ function App() {
 
     try {
       const extension = file.name.split(".").pop()?.toLowerCase();
-      let values = [];
-
-      if (extension === "xlsx" || extension === "xls") {
-        const buffer = await file.arrayBuffer();
-        const workbook = XLSX.read(buffer, { type: "array" });
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false });
-        values = extractEmailsFromWorksheetRows(rows);
-      } else {
-        values = extractEmailsFromText(await file.text());
+      if (extension !== "txt") {
+        throw new Error("Upload a .txt file with one email,password pair per line");
       }
 
-      const emailResult = uniqueEmailAddresses(values);
+      const values = parseUploadedEmailAccounts(await file.text());
+      const emailResult = uniqueUploadedEmailAccounts(values);
       setUploadedEmailValues(values);
       setUploadedEmails(emailResult);
       setGeneratorForm((current) => ({ ...current, fileName: file.name }));
-      setNotice(`Loaded ${emailResult.valid.length} valid emails from ${file.name}`);
+      setNotice(`Loaded ${emailResult.valid.length} email/password pairs from ${file.name}`);
     } catch (err) {
       setUploadedEmailValues([]);
-      setUploadedEmails({ rawCount: 0, valid: [], duplicatesRemoved: 0 });
+      setUploadedEmails({ rawCount: 0, valid: [], passwordByEmail: {}, duplicatesRemoved: 0 });
       setError(err.message || "Could not read email file");
     } finally {
       event.target.value = "";
@@ -1083,6 +1817,54 @@ function App() {
     );
   }
 
+  async function loadMailuStorage(options = {}) {
+    const activeBatchId =
+      options.batchId !== undefined ? options.batchId : mailuBatchId;
+    const createdParams = new URLSearchParams({ limit: "10000" });
+    if (mailuSearch.trim()) createdParams.set("search", mailuSearch.trim());
+    if (activeBatchId) createdParams.set("batchId", activeBatchId);
+
+    const [batchesData, createdData] = await Promise.all([
+      apiRequest("/api/mailu-users/batches?limit=50"),
+      apiRequest(`/api/mailu-users/created?${createdParams.toString()}`),
+    ]);
+
+    setMailuBatches(batchesData.batches || []);
+    const nextCreatedUsers = createdData.createdUsers || [];
+    setMailuCreatedUsers(nextCreatedUsers);
+    setMailuCreatedTotal(createdData.total || 0);
+    setSelectedMailuCreatedIds((current) =>
+      current.filter((id) => nextCreatedUsers.some((user) => user._id === id))
+    );
+  }
+
+  async function loadMailuBatchDetails(batchId) {
+    if (!batchId) {
+      setMailuBatchId("");
+      await loadMailuStorage({ batchId: "" });
+      return;
+    }
+
+    setBusy(true);
+    setError("");
+    try {
+      const data = await apiRequest(`/api/mailu-users/batches/${batchId}?limit=500`);
+      setMailuBatchId(batchId);
+      setMailuRows(data.users || []);
+      setMailuStatus({
+        state: "success",
+        message: `Loaded ${data.users?.length || 0} generated users from MongoDB.`,
+        summary: data.batch?.latestMailuSummary || null,
+        results: data.mailuResults || [],
+      });
+      await loadMailuStorage({ batchId });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function loadJobDetails(jobId = selectedJobId) {
     if (!jobId) return;
     const [jobData, logData] = await Promise.all([
@@ -1110,6 +1892,7 @@ function App() {
       loadJobs(),
       loadApiAutomationJobs(),
       loadRegisteredAccounts(),
+      loadMailuStorage(),
     ]);
     if (selectedJobId) {
       await loadJobDetails(selectedJobId);
@@ -1177,7 +1960,7 @@ function App() {
 
   useEffect(() => {
     if (!uploadedEmailValues.length) return;
-    setUploadedEmails(uniqueEmailAddresses(uploadedEmailValues));
+    setUploadedEmails(uniqueUploadedEmailAccounts(uploadedEmailValues));
   }, [uploadedEmailValues]);
 
   useEffect(() => {
@@ -1201,6 +1984,13 @@ function App() {
         if (!response.ok) {
           throw new Error("Waiting for live preview");
         }
+
+        const contentType = response.headers.get("Content-Type") || "";
+        if (!contentType.toLowerCase().startsWith("image/")) {
+          const message = await response.text();
+          throw new Error(message || "Live preview is not available");
+        }
+
         const blob = await response.blob();
         if (cancelled) return;
         const nextUrl = window.URL.createObjectURL(blob);
@@ -1211,7 +2001,14 @@ function App() {
         currentObjectUrl = nextUrl;
         setLivePreviewError("");
       } catch (err) {
-        if (!cancelled) setLivePreviewError(err.message);
+        if (!cancelled) {
+          setLivePreviewUrl((previousUrl) => {
+            if (previousUrl) window.URL.revokeObjectURL(previousUrl);
+            return "";
+          });
+          currentObjectUrl = "";
+          setLivePreviewError(err.message);
+        }
       }
     }
 
@@ -1333,8 +2130,15 @@ function App() {
       if (!generatorForm.templateId) {
         throw new Error("Choose a template for generated records");
       }
-      if (generatedRecords.length === 0) {
-        throw new Error("Upload valid email addresses before confirming");
+      if (dataGeneratorRecords.length === 0) {
+        throw new Error(
+          generatorForm.emailSource === "mailu"
+            ? "No valid Mailu-created users are available from MongoDB"
+            : "Upload valid email addresses before confirming"
+        );
+      }
+      if (generatorForm.emailSource === "mailu") {
+        validateMailuGeneratorPasswords(dataGeneratorRecords);
       }
 
       const data = await apiRequest("/api/jobs", {
@@ -1342,11 +2146,11 @@ function App() {
         body: JSON.stringify({
           templateId: generatorForm.templateId,
           settings: settingsPayload(settings),
-          records: generatedRecords,
+          records: dataGeneratorRecords,
         }),
       });
 
-      setNotice(`Generated job added with ${generatedRecords.length} records`);
+      setNotice(`Generated job added with ${dataGeneratorRecords.length} records`);
       await loadJobs();
       setSelectedJobId(data.job._id);
       setActiveTab("manual");
@@ -1712,6 +2516,13 @@ function App() {
           Data Generator
         </button>
         <button
+          className={activeTab === "mailu" ? "tab-button tab-button-active" : "tab-button"}
+          type="button"
+          onClick={() => setActiveTab("mailu")}
+        >
+          Mailu Users
+        </button>
+        <button
           className={activeTab === "api" ? "tab-button tab-button-active" : "tab-button"}
           type="button"
           onClick={() => setActiveTab("api")}
@@ -1958,21 +2769,13 @@ function App() {
                 min="0"
                 max="5000"
                 value={settings.slowMoMs}
+                disabled
                 onChange={(event) =>
                   setSettings((current) => ({ ...current, slowMoMs: event.target.value }))
                 }
               />
             </label>
-            <label className="toggle-field">
-              <input
-                type="checkbox"
-                checked={!settings.headless}
-                onChange={(event) =>
-                  setSettings((current) => ({ ...current, headless: !event.target.checked }))
-                }
-              />
-              <span>Show browser</span>
-            </label>
+            <div className="auto-map-box">Headless screenshot preview mode is active.</div>
             <label className="toggle-field">
               <input
                 type="checkbox"
@@ -2128,8 +2931,18 @@ function App() {
                 ))}
               </select>
             </label>
+            <label className="field">
+              <span>Email source</span>
+              <select
+                value={generatorForm.emailSource}
+                onChange={(event) => updateGeneratorForm("emailSource", event.target.value)}
+              >
+                <option value="upload">Upload emails</option>
+                <option value="mailu">Mailu created users from MongoDB</option>
+              </select>
+            </label>
             <div className="field">
-              <span>MAJIC cases for uploaded emails</span>
+              <span>MAJIC cases for generated records</span>
               <div className="case-multi-select">
                 {registrationCaseOptions.map((registrationCase) => (
                   <label key={registrationCase}>
@@ -2144,7 +2957,7 @@ function App() {
               </div>
             </div>
             <div className="field">
-              <span>Proxy cases for uploaded emails</span>
+              <span>Proxy cases for generated records</span>
               <div className="case-multi-select">
                 {proxyCaseOptions.map((proxyCase) => (
                   <label key={proxyCase}>
@@ -2229,23 +3042,138 @@ function App() {
             </div>
           </div>
 
-          <div className="generator-upload">
-            <label className="field">
-              <span>Upload emails file</span>
-              <input
-                type="file"
-                accept=".xlsx,.xls,.csv,.txt,text/csv,text/plain"
-                onChange={handleEmailFile}
-              />
-            </label>
-            <div className="generator-stats">
-              <StatBox label="Read" value={uploadedEmails.rawCount} />
-              <StatBox label="Valid" value={uploadedEmails.valid.length} />
-              <StatBox label="Duplicates/invalid" value={uploadedEmails.duplicatesRemoved} />
-              <StatBox label="Will create" value={generatedRecords.length} />
+          {generatorForm.emailSource === "upload" ? (
+            <div className="generator-upload">
+              <label className="field">
+                <span>Upload email/password TXT</span>
+                <input
+                  type="file"
+                  accept=".txt,text/plain"
+                  onChange={handleEmailFile}
+                />
+              </label>
+              <div className="generator-stats">
+                <StatBox label="Read" value={uploadedEmails.rawCount} />
+                <StatBox label="Valid" value={uploadedEmails.valid.length} />
+                <StatBox label="Duplicates/invalid" value={uploadedEmails.duplicatesRemoved} />
+                <StatBox label="Will create" value={dataGeneratorRecords.length} />
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="generator-upload">
+              <div className="form-grid">
+                <label className="field">
+                  <span>Mailu batch filter</span>
+                  <select
+                    value={mailuBatchId}
+                    onChange={(event) => loadMailuBatchDetails(event.target.value)}
+                  >
+                    <option value="">All stored created users</option>
+                    {mailuBatches.map((batch) => (
+                      <option key={batch.batchId} value={batch.batchId}>
+                        {batch.batchId.slice(0, 8)} - {batch.count} users
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Search Mailu email</span>
+                  <input
+                    value={mailuSearch}
+                    onChange={(event) => setMailuSearch(event.target.value)}
+                    placeholder="email"
+                  />
+                </label>
+              </div>
+              <div className="api-button-row">
+                <button type="button" onClick={loadMailuStorage} disabled={busy}>
+                  <RefreshCw size={16} />
+                  Load Mailu Created Users
+                </button>
+                <button
+                  type="button"
+                  onClick={selectAllValidMailuCreated}
+                  disabled={busy || mailuGeneratorValidation.validRecords.length === 0}
+                >
+                  <CheckCircle2 size={16} />
+                  Select All Valid
+                </button>
+                <button
+                  type="button"
+                  onClick={clearSelectedMailuCreated}
+                  disabled={busy || selectedMailuCreatedIds.length === 0}
+                >
+                  <Trash2 size={16} />
+                  Clear Selection
+                </button>
+              </div>
+              <div className="form-grid">
+                <label className="field">
+                  <span>Emails to use</span>
+                  <select
+                    value={generatorForm.mailuUseMode}
+                    onChange={(event) => updateGeneratorForm("mailuUseMode", event.target.value)}
+                  >
+                    <option value="selected">Selected emails only</option>
+                    <option value="first">First N loaded</option>
+                    <option value="random">Random N loaded</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Email count</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max={mailuGeneratorValidation.validRecords.length || 1}
+                    value={generatorForm.mailuCount}
+                    onChange={(event) => updateGeneratorForm("mailuCount", event.target.value)}
+                    disabled={generatorForm.mailuUseMode === "selected"}
+                  />
+                </label>
+                <label className="field">
+                  <span>MAJIC case assignment</span>
+                  <select
+                    value={generatorForm.caseMode}
+                    onChange={(event) => updateGeneratorForm("caseMode", event.target.value)}
+                  >
+                    <option value="rotate">Rotate selected cases</option>
+                    <option value="random">Random selected cases</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Proxy case assignment</span>
+                  <select
+                    value={generatorForm.proxyCaseMode}
+                    onChange={(event) => updateGeneratorForm("proxyCaseMode", event.target.value)}
+                  >
+                    <option value="rotate">Rotate selected proxy cases</option>
+                    <option value="random">Random selected proxy cases</option>
+                  </select>
+                </label>
+              </div>
+              <div className="generator-stats">
+                <StatBox label="Created loaded" value={mailuGeneratorValidation.summary.total} />
+                <StatBox label="Selected" value={selectedMailuRecordCount} />
+                <StatBox label="Name matched" value={mailuGeneratorValidation.summary.matched} />
+                <StatBox
+                  label="Missing identity"
+                  value={mailuGeneratorValidation.summary.missingIdentity}
+                />
+                <StatBox
+                  label="Name mismatch"
+                  value={mailuGeneratorValidation.summary.mismatchedNames}
+                />
+                <StatBox label="Invalid email" value={mailuGeneratorValidation.summary.invalidEmails} />
+                <StatBox
+                  label="Duplicates ignored"
+                  value={mailuGeneratorValidation.summary.duplicateEmails}
+                />
+                <StatBox label="Will queue" value={dataGeneratorRecords.length} />
+              </div>
+            </div>
+          )}
 
+          {generatorForm.emailSource === "upload" ? (
           <div className="form-grid">
             <label className="field">
               <span>Generation count</span>
@@ -2268,9 +3196,80 @@ function App() {
               />
             </label>
           </div>
+          ) : null}
 
-          {generatorCountWarning ? (
+          {generatorForm.emailSource === "upload" && generatorCountWarning ? (
             <div className="auto-map-box">{generatorCountWarning}</div>
+          ) : null}
+
+          {generatorForm.emailSource === "mailu" ? (
+            <div className="table-wrap generator-preview">
+              <table>
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Email</th>
+                    <th>Name</th>
+                    <th>DOB</th>
+                    <th>Password</th>
+                    <th>Validation</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {mailuGeneratorValidation.records.slice(0, 100).map((record) => {
+                    const isValid =
+                      record.validation.validEmail &&
+                      record.validation.hasRequiredIdentity &&
+                      record.validation.nameMatchesEmail &&
+                      Boolean(record.password);
+                    return (
+                      <tr key={record.mailuCreatedUserId || record.email}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={selectedMailuCreatedIds.includes(
+                              record.mailuCreatedUserId
+                            )}
+                            disabled={!isValid}
+                            onChange={() =>
+                              toggleMailuCreatedSelection(record.mailuCreatedUserId)
+                            }
+                          />
+                        </td>
+                        <td>
+                          <code>{record.email}</code>
+                        </td>
+                        <td>
+                          {record.firstName} {record.surname}
+                        </td>
+                        <td>
+                          {record.birthDay}/{record.birthMonth}/{record.birthYear}
+                        </td>
+                        <td>
+                          <code>{record.password}</code>
+                        </td>
+                        <td>
+                          <StatusPill
+                            status={
+                              isValid
+                                ? record.validation.hasLinkedIdentity
+                                  ? "matched"
+                                  : "fallback"
+                                : "failed"
+                            }
+                          />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {mailuGeneratorValidation.records.length === 0 ? (
+                    <tr>
+                      <td colSpan="6">Load Mailu-created users from MongoDB to select records.</td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
           ) : null}
 
           <div className="table-wrap generator-preview">
@@ -2285,10 +3284,11 @@ function App() {
                   <th>MAJIC case</th>
                   <th>Proxy case</th>
                   <th>Password</th>
+                  {generatorForm.emailSource === "mailu" ? <th>Validation</th> : null}
                 </tr>
               </thead>
               <tbody>
-                {generatedRecords.slice(0, 25).map((record, index) => (
+                {dataGeneratorRecords.slice(0, 25).map((record, index) => (
                   <tr key={`${record.contact}-${index}`}>
                     <td>{record.firstName}</td>
                     <td>{record.surname}</td>
@@ -2304,11 +3304,24 @@ function App() {
                     <td>
                       <code>{record.password}</code>
                     </td>
+                    {generatorForm.emailSource === "mailu" ? (
+                      <td>
+                        <StatusPill
+                          status={
+                            record.validation?.hasLinkedIdentity ? "matched" : "fallback"
+                          }
+                        />
+                      </td>
+                    ) : null}
                   </tr>
                 ))}
-                {generatedRecords.length === 0 ? (
+                {dataGeneratorRecords.length === 0 ? (
                   <tr>
-                    <td colSpan="8">Upload emails to preview generated records.</td>
+                    <td colSpan={generatorForm.emailSource === "mailu" ? 9 : 8}>
+                      {generatorForm.emailSource === "mailu"
+                        ? "Load Mailu-created users from MongoDB to preview validated records."
+                        : "Upload emails to preview generated records."}
+                    </td>
                   </tr>
                 ) : null}
               </tbody>
@@ -2317,12 +3330,289 @@ function App() {
 
           <button
             className="primary-button"
-            disabled={busy || !generatorForm.templateId || generatedRecords.length === 0}
+            disabled={busy || !generatorForm.templateId || dataGeneratorRecords.length === 0}
           >
             <CheckCircle2 size={17} />
-            Confirm Generated Job
+            Confirm Data Generator Job
           </button>
         </form>
+      ) : null}
+
+      {activeTab === "mailu" ? (
+        <section className="grid two-columns mailu-grid">
+          <section className="panel mailu-panel">
+            <div className="panel-title split">
+              <div>
+                <Database size={18} />
+                <h2>Mailu Generator + MongoDB</h2>
+              </div>
+              <span className="muted">{mailuRows.length.toLocaleString()} rows</span>
+            </div>
+
+            <div className="form-grid">
+              <label className="field">
+                <span>Rows</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="10000"
+                  value={mailuForm.count}
+                  onChange={(event) => updateMailuForm("count", event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>Email domain</span>
+                <input
+                  value={mailuForm.domain}
+                  onChange={(event) => updateMailuForm("domain", event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>Saved batch</span>
+                <select
+                  value={mailuBatchId}
+                  onChange={(event) => loadMailuBatchDetails(event.target.value)}
+                >
+                  <option value="">Current unsaved batch</option>
+                  {mailuBatches.map((batch) => (
+                    <option key={batch.batchId} value={batch.batchId}>
+                      {batch.batchId.slice(0, 8)} - {batch.count} users
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <div className="api-button-row">
+              <button type="button" onClick={generateMailuBatch} disabled={busy}>
+                <RefreshCw size={16} />
+                Generate
+              </button>
+              <button type="button" onClick={saveMailuBatch} disabled={busy || mailuRows.length === 0}>
+                <Database size={16} />
+                Save to MongoDB
+              </button>
+              <button type="button" onClick={loadMailuStorage} disabled={busy}>
+                <RefreshCw size={16} />
+                Refresh Storage
+              </button>
+            </div>
+
+            <div className="generator-stats">
+              <StatBox label="Generated" value={mailuRows.length} />
+              <StatBox label="Saved batches" value={mailuBatches.length} />
+              <StatBox label="Created records" value={mailuCreatedTotal} />
+              <StatBox label="Active batch" value={mailuBatchId ? mailuBatchId.slice(0, 8) : "New"} />
+            </div>
+
+            <div className="table-wrap generator-preview">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>DOB</th>
+                    <th>Gender</th>
+                    <th>Email</th>
+                    <th>Password</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {mailuPreviewRows.map((row) => (
+                    <tr key={row.email}>
+                      <td>{row.name}</td>
+                      <td>
+                        {row.day}/{row.month}/{row.year}
+                      </td>
+                      <td>{row.gender}</td>
+                      <td>
+                        <code>{row.email}</code>
+                      </td>
+                      <td>
+                        <code>{row.password}</code>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section className="panel mailu-panel">
+            <div className="panel-title">
+              <ShieldCheck size={18} />
+              <h2>Create Mailu Users</h2>
+            </div>
+
+            <div className="form-grid">
+              <label className="field">
+                <span>Mailu URL</span>
+                <input
+                  type="url"
+                  placeholder="https://mail.aitechia.com"
+                  value={mailuForm.baseUrl}
+                  onChange={(event) => updateMailuForm("baseUrl", event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>API path</span>
+                <input
+                  value={mailuForm.apiPath}
+                  onChange={(event) => updateMailuForm("apiPath", event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>API token</span>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={mailuForm.apiToken}
+                  onChange={(event) => updateMailuForm("apiToken", event.target.value)}
+                />
+              </label>
+              <label className="field checkbox-field">
+                <span>Dry run</span>
+                <input
+                  type="checkbox"
+                  checked={mailuForm.dryRun}
+                  onChange={(event) => updateMailuForm("dryRun", event.target.checked)}
+                />
+              </label>
+            </div>
+
+            <div className="api-button-row">
+              <button type="button" onClick={testMailuConnection} disabled={busy}>
+                <ShieldCheck size={16} />
+                Test Connection
+              </button>
+              <button
+                className="primary-button"
+                type="button"
+                onClick={createMailuUsers}
+                disabled={busy || mailuRows.length === 0}
+              >
+                <Plus size={16} />
+                Create Generated Users
+              </button>
+              <button type="button" onClick={findMailuDuplicates} disabled={busy}>
+                <ShieldCheck size={16} />
+                Find Duplicates
+              </button>
+              <button type="button" onClick={cleanupMailuDuplicates} disabled={busy}>
+                <Trash2 size={16} />
+                Cleanup Duplicates
+              </button>
+              <button
+                type="button"
+                onClick={cleanupExistingGeneratedMailuUsers}
+                disabled={busy || mailuRows.length === 0}
+              >
+                <Trash2 size={16} />
+                Cleanup Generated Existing
+              </button>
+            </div>
+
+            <div className={`mailu-status mailu-status-${mailuStatus.state}`}>
+              <strong>Status</strong>
+              <span>{mailuStatus.message}</span>
+            </div>
+
+            {mailuStatus.summary ? (
+              <div className="generator-stats">
+                {Object.entries(mailuStatus.summary).map(([key, value]) => (
+                  <StatBox key={key} label={key} value={value} />
+                ))}
+              </div>
+            ) : null}
+
+            {mailuResultRows.length > 0 ? (
+              <div className="table-wrap api-account-preview">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Email</th>
+                      <th>Status</th>
+                      <th>Message</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {mailuResultRows.map((result) => (
+                      <tr key={`${result.email}-${result.status}`}>
+                        <td>
+                          <code>{result.email}</code>
+                        </td>
+                        <td>
+                          <StatusPill status={result.status} />
+                        </td>
+                        <td>{result.message}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+          </section>
+
+          <section className="panel full-span">
+            <div className="panel-title split">
+              <div>
+                <Database size={18} />
+                <h2>Stored Mailu Created Users</h2>
+              </div>
+              <label className="inline-search">
+                <span>Search</span>
+                <input
+                  value={mailuSearch}
+                  onChange={(event) => setMailuSearch(event.target.value)}
+                  placeholder="email"
+                />
+              </label>
+            </div>
+
+            <div className="api-button-row">
+              <button type="button" onClick={loadMailuStorage} disabled={busy}>
+                <RefreshCw size={16} />
+                Apply Search
+              </button>
+            </div>
+
+            {mailuCreatedUsers.length > 0 ? (
+              <div className="table-wrap saved-accounts-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Email</th>
+                      <th>Password</th>
+                      <th>Status</th>
+                      <th>Batch</th>
+                      <th>Created</th>
+                      <th>Message</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {mailuCreatedUsers.map((user) => (
+                      <tr key={user._id}>
+                        <td>
+                          <code>{user.email}</code>
+                        </td>
+                        <td>
+                          <code>{user.password}</code>
+                        </td>
+                        <td>
+                          <StatusPill status={user.status} />
+                        </td>
+                        <td>{user.batchId?.slice(0, 8) || "-"}</td>
+                        <td>{formatDate(user.createdAt)}</td>
+                        <td>{user.message || "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="empty-state">No Mailu-created users are stored yet.</p>
+            )}
+          </section>
+        </section>
       ) : null}
 
       {activeTab === "api" ? (
@@ -2606,6 +3896,14 @@ function App() {
                 <button type="button" onClick={() => loadRegisteredAccounts()} disabled={busy}>
                   <RefreshCw size={16} />
                   Apply Filters
+                </button>
+                <button
+                  type="button"
+                  onClick={showFacebookRegisteredAccounts}
+                  disabled={busy}
+                >
+                  <Globe size={16} />
+                  Show Facebook Accounts
                 </button>
                 <button
                   type="button"

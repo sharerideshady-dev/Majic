@@ -17,22 +17,6 @@ const loginFieldAliases = [
   "اسم المستخدم",
 ];
 
-const socialHosts = [
-  "facebook.com",
-  "fb.com",
-  "fbcdn.net",
-  "meta.com",
-  "instagram.com",
-  "threads.net",
-  "x.com",
-  "twitter.com",
-  "tiktok.com",
-  "linkedin.com",
-  "youtube.com",
-  "pinterest.com",
-  "snapchat.com",
-  "reddit.com",
-];
 const requestedActionKeys = ["followPage", "likePosts", "sharePosts"];
 
 function hostnameOf(url) {
@@ -47,24 +31,9 @@ function matchesHost(hostname, domain) {
   return hostname === domain || hostname.endsWith(`.${domain}`);
 }
 
-function isSocialHost(url) {
-  const hostname = hostnameOf(url);
-  return socialHosts.some((domain) => matchesHost(hostname, domain));
-}
 
-function isLocalHost(hostname) {
-  return ["localhost", "127.0.0.1", "::1"].includes(hostname);
-}
 
-function isAllowedAutomationHost(url) {
-  const hostname = hostnameOf(url);
-  if (!hostname) return false;
-  if (isLocalHost(hostname)) return true;
 
-  return config.apiAutomation.allowedHosts.some((domain) =>
-    matchesHost(hostname, domain.toLowerCase())
-  );
-}
 
 function officialConnectorConfigured() {
   return Boolean(

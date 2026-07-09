@@ -66,6 +66,15 @@ function queryRegisteredAccounts(params = {}) {
   if (params.registrationCase) query.registrationCase = params.registrationCase;
   if (params.proxyCase) query.proxyCase = params.proxyCase;
   if (params.templateId) query.templateId = params.templateId;
+  if (String(params.facebookOnly || "").toLowerCase() === "true") {
+    const facebookUrl = { $regex: "facebook\\.com|fb\\.com", $options: "i" };
+    query.$or = [
+      { sourceUrl: facebookUrl },
+      { finalUrl: facebookUrl },
+      { loginUrl: facebookUrl },
+      { targetUrl: facebookUrl },
+    ];
+  }
   if (params.search) {
     const search = String(params.search)
       .trim()

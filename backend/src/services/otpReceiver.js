@@ -191,6 +191,35 @@ function parseJsonMaybe(value) {
   }
 }
 
+function getHeaderFromMessageHeaders(messageHeaders, headerName) {
+  if (!messageHeaders) return "";
+  const normalizedName = String(headerName || "").toLowerCase();
+
+  if (Array.isArray(messageHeaders)) {
+    const values = [];
+    for (const entry of messageHeaders) {
+      if (Array.isArray(entry) && String(entry[0] || "").toLowerCase() === normalizedName) {
+        values.push(entry[1]);
+      } else if (
+        entry &&
+        typeof entry === "object" &&
+        String(entry.name || entry.key || "").toLowerCase() === normalizedName
+      ) {
+        values.push(entry.value);
+      }
+    }
+    return values.filter(Boolean).join(", ");
+  }
+
+  if (typeof messageHeaders === "object") {
+    for (const [key, value] of Object.entries(messageHeaders)) {
+      if (String(key).toLowerCase() === normalizedName) return value;
+    }
+  }
+
+  return "";
+}
+
 function getPayloadField(payload, names) {
   if (!payload || typeof payload !== "object") return "";
 
@@ -222,8 +251,38 @@ function parseInboundPayload(payload) {
   const parsedRaw = raw ? parseMimeMessage(normalizePayloadValue(raw)) : {};
   const envelope = parseJsonMaybe(body.envelope);
   const messageHeaders = parseJsonMaybe(body["message-headers"]);
+  const debugHeaders = {
+    ...(parsedRaw.debugHeaders || {}),
+    to:
+      getPayloadField(body, ["to", "recipient", "recipients", "rcpt_to"]) ||
+      getHeaderFromMessageHeaders(messageHeaders, "to") ||
+      (parsedRaw.debugHeaders && parsedRaw.debugHeaders.to) ||
+      "",
+    deliveredTo:
+      getPayloadField(body, ["Delivered-To", "delivered-to", "deliveredTo"]) ||
+      getHeaderFromMessageHeaders(messageHeaders, "delivered-to") ||
+      (parsedRaw.debugHeaders && parsedRaw.debugHeaders.deliveredTo) ||
+      "",
+    xOriginalTo:
+      getPayloadField(body, ["X-Original-To", "x-original-to", "xOriginalTo"]) ||
+      getHeaderFromMessageHeaders(messageHeaders, "x-original-to") ||
+      (parsedRaw.debugHeaders && parsedRaw.debugHeaders.xOriginalTo) ||
+      "",
+    envelopeTo:
+      getPayloadField(body, ["Envelope-To", "envelope-to", "envelopeTo"]) ||
+      getHeaderFromMessageHeaders(messageHeaders, "envelope-to") ||
+      (parsedRaw.debugHeaders && parsedRaw.debugHeaders.envelopeTo) ||
+      "",
+    received:
+      getPayloadField(body, ["Received", "received"]) ||
+      getHeaderFromMessageHeaders(messageHeaders, "received") ||
+      (parsedRaw.debugHeaders && parsedRaw.debugHeaders.received) ||
+      "",
+  };
 
   return {
+    headers: parsedRaw.headers || {},
+    debugHeaders,
     from:
       getPayloadField(body, ["from", "sender", "fromEmail", "from_email"]) ||
       parsedRaw.from ||
@@ -232,6 +291,10 @@ function parseInboundPayload(payload) {
       getPayloadField(body, ["to", "recipient", "recipients", "rcpt_to"]),
       getPayloadField(body, ["cc"]),
       getPayloadField(body, ["bcc"]),
+      debugHeaders.deliveredTo,
+      debugHeaders.xOriginalTo,
+      debugHeaders.envelopeTo,
+      debugHeaders.received,
       envelope,
       messageHeaders,
       parsedRaw.recipients,
@@ -281,7 +344,10 @@ function getRequestIdFromRecipient(recipient) {
   if (domain !== config.otp.mailDomain) return null;
 
   const expectedPrefix = `${config.otp.aliasLocalPart}+`;
-  if (!localPart.startsWith(expectedPrefix)) return null;
+  if (!localPart.startsWith(expectedPrefix)) {
+    if (!/^[a-z0-9_-]{4,80}$/.test(localPart)) return null;
+    return { requestId: localPart, recipient: address };
+  }
 
   const requestId = localPart.slice(expectedPrefix.length);
   if (!/^[a-z0-9_-]{8,80}$/.test(requestId)) return null;
@@ -504,6 +570,7 @@ async function processInboundEmail({ payload, source = "webhook" }) {
 
 module.exports = {
   createOtpSession,
+  extractOtpFromEmail,
   getOtpSessionForRequester,
   processInboundEmail,
 };

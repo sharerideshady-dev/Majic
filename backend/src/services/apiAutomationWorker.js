@@ -1,3 +1,8 @@
+
+
+
+
+
 const mongoose = require("mongoose");
 const ApiAutomationAttempt = require("../models/ApiAutomationAttempt");
 const ApiAutomationJob = require("../models/ApiAutomationJob");
@@ -63,6 +68,8 @@ async function runApiAutomationAttempt(attempt, job) {
         sessionId: proxySessionId,
         enabled: true,
       };
+    } else {
+      delete attempt.result.proxySession;
     }
 
     await recordStep(

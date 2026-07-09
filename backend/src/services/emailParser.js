@@ -83,6 +83,23 @@ function parseHeaders(headerText) {
   return headers;
 }
 
+function getHeaderValue(headers, name) {
+  return headers[String(name || "").toLowerCase()] || "";
+}
+
+function getDebugHeaders(headers) {
+  return {
+    to: getHeaderValue(headers, "to"),
+    deliveredTo: getHeaderValue(headers, "delivered-to"),
+    xOriginalTo: getHeaderValue(headers, "x-original-to"),
+    envelopeTo: getHeaderValue(headers, "envelope-to"),
+    received: getHeaderValue(headers, "received"),
+    subject: getHeaderValue(headers, "subject"),
+    from: getHeaderValue(headers, "from"),
+    date: getHeaderValue(headers, "date"),
+  };
+}
+
 function splitHeaderAndBody(raw) {
   const text = String(raw || "").replace(/\r?\n/g, "\r\n");
   const separatorIndex = text.indexOf("\r\n\r\n");
@@ -166,6 +183,8 @@ function parseMimeMessage(raw) {
   const plainText = parts.text.join("\n").trim();
 
   return {
+    headers,
+    debugHeaders: getDebugHeaders(headers),
     from: headers.from || headers.sender || "",
     recipients: [
       headers.to,
@@ -174,6 +193,7 @@ function parseMimeMessage(raw) {
       headers["delivered-to"],
       headers["x-original-to"],
       headers["envelope-to"],
+      headers.received,
     ].filter(Boolean),
     subject: normalizeWhitespace(headers.subject || ""),
     text: plainText || stripHtml(html),
@@ -237,7 +257,9 @@ function sanitizePreview(value, limit = 300) {
 
 module.exports = {
   extractEmailAddresses,
+  getDebugHeaders,
   normalizeWhitespace,
+  parseHeaders,
   parseMimeMessage,
   sanitizePreview,
   stripHtml,

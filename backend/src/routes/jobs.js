@@ -30,6 +30,10 @@ async function serializeJob(job) {
   return Job.findById(job._id).populate("templateId", "name url");
 }
 
+function canLaunchHeadedBrowser() {
+  return process.platform !== "linux";
+}
+
 router.post("/", async (req, res, next) => {
   try {
     const payload = validate(jobSchema, req.body);
@@ -42,21 +46,24 @@ router.post("/", async (req, res, next) => {
       throw error;
     }
 
-    const showBrowser = payload.settings.showBrowser ?? payload.settings.headless === false;
+    const requestedShowBrowser = payload.settings.showBrowser ?? payload.settings.headless === false;
+    const showBrowser = requestedShowBrowser && canLaunchHeadedBrowser();
+    const headless = showBrowser ? false : true;
     const settings = {
       minDelayMs: payload.settings.minDelayMs ?? config.defaults.minDelayMs,
       maxDelayMs: payload.settings.maxDelayMs ?? config.defaults.maxDelayMs,
       registrationCase: payload.settings.registrationCase ?? "MAJIC ONE",
       concurrency: payload.settings.concurrency ?? config.defaults.concurrency,
-      headless: showBrowser ? false : payload.settings.headless ?? true,
+      headless,
       showBrowser,
       livePreview: payload.settings.livePreview ?? true,
       keepBrowserOpenOnError: payload.settings.keepBrowserOpenOnError ?? false,
-      slowMoMs: payload.settings.slowMoMs ?? (showBrowser ? 500 : 0),
+      slowMoMs: showBrowser ? payload.settings.slowMoMs ?? 500 : 0,
       useZyteProxy: payload.settings.useZyteProxy ?? config.zyte.enabledByDefault,
       fieldOrder: payload.settings.fieldOrder ?? [
         "firstName",
         "surname",
+        "username",
         "birthDay",
         "birthMonth",
         "birthYear",
@@ -113,14 +120,21 @@ router.get("/", async (req, res, next) => {
 router.get("/attempts/:attemptId/screenshot", async (req, res, next) => {
   try {
     assertObjectId(req.params.attemptId, "attempt id");
-    const attempt = await Attempt.findById(req.params.attemptId).select("_id");
+    const attempt = await Attempt.findById(req.params.attemptId).select("_id result.lastScreenshot");
     if (!attempt) {
       const error = new Error("Attempt not found");
       error.statusCode = 404;
       throw error;
     }
 
-    const screenshot = getAttemptScreenshot(req.params.attemptId);
+    let screenshot = getAttemptScreenshot(req.params.attemptId);
+    if (!screenshot && attempt.result?.lastScreenshot?.data) {
+      screenshot = {
+        contentType: attempt.result.lastScreenshot.contentType || "image/jpeg",
+        buffer: Buffer.from(attempt.result.lastScreenshot.data, "base64"),
+        updatedAt: new Date(attempt.result.lastScreenshot.updatedAt || attempt.updatedAt).getTime(),
+      };
+    }
     if (!screenshot) {
       const error = new Error("Screenshot not available yet");
       error.statusCode = 404;
@@ -142,13 +156,13 @@ router.get("/:id/live-screenshot", async (req, res, next) => {
     const attempt =
       (await Attempt.findOne({ jobId: req.params.id, status: "running" })
         .sort({ updatedAt: -1 })
-        .select("_id")) ||
+        .select("_id result.lastScreenshot updatedAt")) ||
       (await Attempt.findOne({
         jobId: req.params.id,
         status: { $in: ["failed", "success"] },
       })
         .sort({ updatedAt: -1 })
-        .select("_id"));
+        .select("_id result.lastScreenshot updatedAt"));
 
     if (!attempt) {
       const error = new Error("No attempt screenshot available yet");
@@ -156,7 +170,14 @@ router.get("/:id/live-screenshot", async (req, res, next) => {
       throw error;
     }
 
-    const screenshot = getAttemptScreenshot(attempt._id);
+    let screenshot = getAttemptScreenshot(attempt._id);
+    if (!screenshot && attempt.result?.lastScreenshot?.data) {
+      screenshot = {
+        contentType: attempt.result.lastScreenshot.contentType || "image/jpeg",
+        buffer: Buffer.from(attempt.result.lastScreenshot.data, "base64"),
+        updatedAt: new Date(attempt.result.lastScreenshot.updatedAt || attempt.updatedAt).getTime(),
+      };
+    }
     if (!screenshot) {
       const error = new Error("Screenshot not available yet");
       error.statusCode = 404;

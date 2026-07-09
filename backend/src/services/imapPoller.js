@@ -2,6 +2,11 @@ const net = require("net");
 const tls = require("tls");
 const config = require("../config");
 const { processInboundEmail } = require("./otpReceiver");
+const { parseMimeMessage, sanitizePreview } = require("./emailParser");
+
+const FALLBACK_MAILBOXES = ["Spam", "Junk", "Junk Email"];
+const IMAP_RECONNECT_ATTEMPTS = 3;
+const IMAP_RECONNECT_DELAY_MS = 5000;
 
 function quoteImapString(value) {
   return `"${String(value || "")
@@ -16,6 +21,7 @@ class SimpleImapClient {
     this.buffer = "";
     this.waiter = null;
     this.tagCounter = 0;
+    this.disconnected = false;
   }
 
   async connect() {
@@ -40,6 +46,9 @@ class SimpleImapClient {
         this.waiter.reject(error);
         this.waiter = null;
       }
+    });
+    this.socket.on("close", () => {
+      this.disconnected = true;
     });
 
     await this.waitFor((buffer) => /^\* OK/m.test(buffer), 15000);
@@ -71,6 +80,10 @@ class SimpleImapClient {
   }
 
   async command(commandText) {
+    if (!this.socket || this.socket.destroyed || this.disconnected) {
+      throw new Error("IMAP connection is not open");
+    }
+
     const tag = `A${String(++this.tagCounter).padStart(4, "0")}`;
     this.buffer = "";
     this.socket.write(`${tag} ${commandText}\r\n`);
@@ -82,7 +95,8 @@ class SimpleImapClient {
     const statusMatch = response.match(new RegExp(`^${tag} (OK|NO|BAD)`, "m"));
 
     if (!statusMatch || statusMatch[1] !== "OK") {
-      throw new Error(`IMAP command failed: ${commandText}`);
+      const commandName = String(commandText || "").split(/\s+/, 1)[0] || "UNKNOWN";
+      throw new Error(`IMAP command failed: ${commandName}`);
     }
 
     return response;
@@ -96,8 +110,33 @@ class SimpleImapClient {
     );
   }
 
-  async selectInbox() {
-    await this.command("SELECT INBOX");
+  async selectMailbox(folder) {
+    await this.command(`SELECT ${quoteImapString(folder || "INBOX")}`);
+  }
+
+  async searchRecentOrUnseen() {
+    let response = "";
+    try {
+      response = await this.command("UID SEARCH OR UNSEEN RECENT");
+    } catch (_error) {
+      const unseenResponse = await this.command("UID SEARCH UNSEEN");
+      const recentResponse = await this.command("UID SEARCH RECENT");
+      response = `${unseenResponse}\n${recentResponse}`;
+    }
+
+    const uids = [];
+    const searchMatches = response.matchAll(/\* SEARCH(?: ([^\r\n]*))?/g);
+    for (const match of searchMatches) {
+      if (!match || !match[1]) continue;
+      uids.push(
+        ...match[1]
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean)
+      );
+    }
+
+    return [...new Set(uids)];
   }
 
   async searchUnseen() {
@@ -168,26 +207,103 @@ function validateImapConfig() {
 }
 
 async function pollMailbox() {
+  for (let attempt = 1; attempt <= IMAP_RECONNECT_ATTEMPTS; attempt += 1) {
+    try {
+      return await pollMailboxOnce(attempt);
+    } catch (error) {
+      const canRetry = attempt < IMAP_RECONNECT_ATTEMPTS;
+      console.error(
+        `IMAP polling attempt ${attempt} failed: ${error.message}${
+          canRetry ? ". Reconnecting..." : ""
+        }`
+      );
+      if (!canRetry) throw error;
+      await new Promise((resolve) => setTimeout(resolve, IMAP_RECONNECT_DELAY_MS));
+    }
+  }
+}
+
+function getMailboxesToCheck() {
+  return ["INBOX", ...FALLBACK_MAILBOXES].filter(
+    (folder, index, folders) => folder && folders.indexOf(folder) === index
+  );
+}
+
+function formatDebugHeader(value) {
+  return sanitizePreview(value || "", 500) || "(empty)";
+}
+
+async function pollMailboxOnce(attempt) {
   const client = new SimpleImapClient(config.otp.imap);
 
   try {
-    await client.connect();
-    await client.login();
-    await client.selectInbox();
-
-    const uids = (await client.searchUnseen()).slice(
-      0,
-      config.otp.imap.maxMessagesPerPoll
+    console.log(
+      `IMAP connecting to ${config.otp.imap.host}:${config.otp.imap.port} as ${config.otp.imap.user} (attempt ${attempt})`
     );
-    for (const uid of uids) {
-      const raw = await client.fetchRaw(uid);
-      const result = await processInboundEmail({
-        payload: raw,
-        source: "imap",
-      });
+    await client.connect();
+    console.log("IMAP connection established");
+    await client.login();
+    console.log("IMAP login successful");
 
-      await client.archive(uid);
-      console.log(`Processed IMAP message UID ${uid}: ${result.status}`);
+    for (const folder of getMailboxesToCheck()) {
+      try {
+        await client.selectMailbox(folder);
+        console.log(`IMAP selected mailbox: ${folder}`);
+      } catch (error) {
+        console.warn(`IMAP mailbox ${folder} unavailable: ${error.message}`);
+        continue;
+      }
+
+      const uids = (await client.searchRecentOrUnseen()).slice(
+        0,
+        config.otp.imap.maxMessagesPerPoll
+      );
+      console.log(`IMAP ${folder}: found ${uids.length} unread/recent message(s)`);
+
+      if (uids.length === 0) {
+        if (folder === "INBOX") {
+          console.log("IMAP INBOX empty; checking Spam/Junk fallback folders");
+          continue;
+        }
+        continue;
+      }
+
+      console.log(`IMAP ${folder}: fetching message UID(s) ${uids.join(", ")}`);
+
+      for (const uid of uids) {
+        let result = null;
+        try {
+          const raw = await client.fetchRaw(uid);
+          const parsed = parseMimeMessage(raw);
+          const headers = parsed.debugHeaders || {};
+          console.log(`IMAP UID ${uid}: To=${formatDebugHeader(headers.to)}`);
+          console.log(`IMAP UID ${uid}: Delivered-To=${formatDebugHeader(headers.deliveredTo)}`);
+          console.log(`IMAP UID ${uid}: X-Original-To=${formatDebugHeader(headers.xOriginalTo)}`);
+          console.log(`IMAP UID ${uid}: Envelope-To=${formatDebugHeader(headers.envelopeTo)}`);
+          console.log(`IMAP UID ${uid}: Received=${formatDebugHeader(headers.received)}`);
+          console.log(`IMAP UID ${uid}: Subject=${formatDebugHeader(headers.subject)}`);
+          console.log(`IMAP UID ${uid}: From=${formatDebugHeader(headers.from)}`);
+          console.log(`IMAP UID ${uid}: Date=${formatDebugHeader(headers.date)}`);
+
+          result = await processInboundEmail({
+            payload: raw,
+            source: "imap",
+          });
+
+          await client.archive(uid);
+          if (result.status === "processed") {
+            console.log(`IMAP UID ${uid}: processed successfully`);
+          } else {
+            console.log(`IMAP UID ${uid}: skipped (${result.status})`);
+          }
+        } catch (error) {
+          console.error(`IMAP UID ${uid}: processing failed (${error.message})`);
+        }
+      }
+
+      if (folder === "INBOX") {
+        return;
+      }
     }
   } finally {
     await client.logout();
@@ -227,5 +343,6 @@ function startImapPoller() {
 }
 
 module.exports = {
+  SimpleImapClient,
   startImapPoller,
 };

@@ -50,7 +50,7 @@ module.exports = {
     proxyServer: process.env.ZYTE_PROXY_SERVER || "http://api.zyte.com:8011",
     proxyPassword: process.env.ZYTE_PROXY_PASSWORD || "",
     usernameTemplate: process.env.ZYTE_PROXY_USERNAME_TEMPLATE || "{apiKey}",
-    enabledByDefault: toBoolean(process.env.ZYTE_PROXY_ENABLED, false),
+    enabledByDefault: toBoolean(process.env.ZYTE_PROXY_ENABLED, true),
     extractEndpoint:
       process.env.ZYTE_EXTRACT_URL || "https://api.zyte.com/v1/extract",
     requestTimeoutMs: toInteger(process.env.ZYTE_REQUEST_TIMEOUT_MS, 60000),
